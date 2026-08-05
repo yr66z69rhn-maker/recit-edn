@@ -71,13 +71,21 @@ h2{font-size:17px;margin:22px 0 8px;color:#9aa4b2;text-transform:uppercase;lette
 .it.n{background:rgba(230,90,90,.10);border-color:rgba(230,90,90,.45)}
 .it.bon{background:rgba(255,180,84,.06);border-style:dashed}
 .mk{display:flex;gap:6px;flex-shrink:0}
-.mk button{width:42px;height:42px;border-radius:11px;border:1px solid #343945;background:#262a33;
-  color:#8b93a1;font-size:20px;font-weight:800;cursor:pointer;line-height:1;font-family:inherit;
+.mk button{width:52px;height:52px;border-radius:13px;border:1px solid #343945;background:#262a33;
+  color:#8b93a1;font-size:24px;font-weight:800;cursor:pointer;line-height:1;font-family:inherit;
   display:flex;align-items:center;justify-content:center}
 .mk button:active{transform:scale(.93)}
 .mk .y.on{background:#2f9e63;border-color:#3fbb79;color:#fff}
 .mk .n.on{background:#c8483f;border-color:#e05a50;color:#fff}
 .lab{font-size:12px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#6f7681;margin:16px 0 4px}
+.lab .ct{float:right;color:#7fc9ff;letter-spacing:0}
+.kw{font-size:18px;font-weight:800;color:#f0ac5b;line-height:1.32;letter-spacing:-.1px}
+.kw .sp{color:#4a4e58;font-weight:600;margin:0 5px}
+.kw .nb{color:#7fc9ff}
+.full{font-size:12.5px;color:#767e8b;margin-top:4px;line-height:1.35}
+.tip{background:rgba(111,179,255,.09);border-left:3px solid #5b9bd5;padding:10px 13px;
+  border-radius:0 8px 8px 0;font-size:13.5px;color:#a8c4e0;margin:8px 0 2px;line-height:1.45}
+.tip b{color:#f0ac5b}
 
 /* ---------- barre du bas ---------- */
 .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(24,26,32,.94);
@@ -277,7 +285,16 @@ function homeStats(){
     '</div>'+
     (chaud? '<div class="warn">'+chaud+' point'+(chaud>1?'s':'')+' encore fragile'+(chaud>1?'s':'')+
       '. Laisse « priorité aux points ratés » activé : ils reviendront en premier.</div>':'')+
+    (chaud?'<button class="btn ok" onclick="soloMissed()">🔁 Réviser mes points fragiles'+
+      '<span class="d">'+chaud+' point'+(chaud>1?'s':'')+' à retravailler, seul, tout de suite</span></button>':'')+
     (nm?'<button class="btn gh mini" onclick="exportMiss()">Exporter mes points ratés</button>':'');
+}
+function soloMissed(){
+  const ids=new Set();
+  Object.entries(MEM.miss).forEach(([k,m])=>{ if(m.n>m.ok) ids.add(k.split('|')[0]); });
+  const cards=CARDS.filter(c=>ids.has(c.id));
+  if(!cards.length){ alert('Aucun point fragile enregistré.'); return; }
+  shuffle(cards); ROLE='solo'; newSession(cards); renderPlay(); show('s-play');
 }
 function stat(v,l){ return '<div class="stat"><div class="v">'+v+'</div><div class="l">'+l+'</div></div>'; }
 
@@ -290,7 +307,8 @@ function openConf(){
   document.getElementById('conf-sub').textContent = ROLE==='solo'
     ? 'Tu récites, ton binôme (ou toi) coche point par point sur le même appareil.'
     : 'Tu choisis le programme, puis tu obtiens un code à donner à ton binôme.';
-  document.getElementById('conf-go').textContent = ROLE==='solo' ? 'Commencer' : 'Créer la salle';
+  document.getElementById('conf-go').textContent =
+    ROLE==='solo' ? 'Commencer' : (KEEP && net.up ? 'Lancer la session' : 'Créer la salle');
 
   const mc=document.getElementById('mat-chips'); mc.innerHTML='';
   DATA.mat.forEach(([m,n])=>{
@@ -354,6 +372,7 @@ function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1)
 
 function startFromConf(){
   if(ROLE==='solo'){ newSession(pick(poolOf(),CONF.len)); renderPlay(); show('s-play'); return; }
+  if(KEEP && net.up && CODE){ KEEP=false; hostStart(); return; }   // salle déjà ouverte
   CODE = randCode();
   document.getElementById('room-code').textContent = CODE;
   document.getElementById('room-start').classList.add('hide');
@@ -411,28 +430,37 @@ function renderPlay(){
 }
 
 function itemsHTML(c, editable, blur){
+  const marker=(ROLE==='host'||ROLE==='solo');
   let h='';
-  if(blur) h+='<div class="lab">Réponse attendue (ne la lis pas à voix haute)</div>';
-  else if(S.phase==='show') h+='<div class="lab">Correction</div>';
-  else h+='<div class="lab">Coche ce qu\'il a dit</div>';
+  if(marker){
+    const d=S.marks[S.i].filter(x=>x!==null).length, n=S.marks[S.i].length;
+    h+='<div class="lab">'+(blur?'Ce qu\'il doit dire':'Coche ce qu\'il a dit')+
+       '<span class="ct">'+d+' / '+n+'</span></div>';
+    if(!blur) h+='<div class="tip">Pas besoin de comprendre : coche <b>✓</b> dès qu\'il prononce '+
+       'le mot en <b>orange</b>. L\'ordre n\'a aucune importance.</div>';
+  }else h+='<div class="lab">Correction</div>';
 
   c.it.forEach((it,i)=>{
     const m=S.marks[S.i][i];
-    const cls = (S.phase==='show'||!editable) && m!==null ? (m?' y':' n') : '';
-    h+='<div class="it'+cls+'">'+
-       '<div class="tx">'+hl(it)+'</div>'+
+    const cls=(!editable||S.phase==='show')&&m!==null?(m?' y':' n'):'';
+    const corps = marker
+      ? '<div class="kw">'+kwHTML(it)+'</div><div class="full">'+esc(it.t)+'</div>'
+      : hl(it);
+    h+='<div class="it'+cls+'"><div class="tx">'+corps+'</div>'+
        (editable? '<div class="mk">'+
           '<button class="n'+(m===0?' on':'')+'" onclick="mark('+i+',0)">✗</button>'+
-          '<button class="y'+(m===1?' on':'')+'" onclick="mark('+i+',1)">✓</button>'+
-        '</div>' : (m===null?'':'<div class="mk"><button class="'+(m?'y on':'n on')+'" style="pointer-events:none">'+(m?'✓':'✗')+'</button></div>'))+
+          '<button class="y'+(m===1?' on':'')+'" onclick="mark('+i+',1)">✓</button></div>'
+        : (m===null?'':'<div class="mk"><button class="'+(m?'y on':'n on')+
+           '" style="pointer-events:none">'+(m?'✓':'✗')+'</button></div>'))+
        '</div>';
   });
+
   if(c.bo && c.bo.length){
     h+='<div class="lab">Bonus — pièges (hors score)</div>';
     c.bo.forEach((b,i)=>{
       const m=S.bonus[S.i][i];
-      h+='<div class="it bon'+((S.phase==='show'||!editable)&&m!==null?(m?' y':' n'):'')+'">'+
-         '<div class="tx">'+esc(b)+'</div>'+
+      h+='<div class="it bon'+((!editable||S.phase==='show')&&m!==null?(m?' y':' n'):'')+'">'+
+         '<div class="tx" style="font-size:14px">'+esc(b)+'</div>'+
          (editable?'<div class="mk">'+
            '<button class="n'+(m===0?' on':'')+'" onclick="markB('+i+',0)">✗</button>'+
            '<button class="y'+(m===1?' on':'')+'" onclick="markB('+i+',1)">✓</button></div>':'')+
@@ -445,6 +473,16 @@ function itemsHTML(c, editable, blur){
        '<button class="btn mini gh" onclick="markAll(0)">Rien su ✗</button></div>';
   }
   return h;
+}
+/* mots-clés à repérer à l'oreille : termes en gras + valeurs chiffrées */
+function kwHTML(it){
+  let ks=(it.k||[]).filter(k=>k.length>1).slice(0,4);
+  const nums=(it.t.match(/\d[\d  .,\/–-]*\s*(?:%|g\/L|mmol\/L|mg|µg|mm|cm|mL|L|SA|UI|h|j|ans)?/g)||[])
+    .map(s=>s.trim()).filter(s=>s.length>0).slice(0,4);
+  nums.forEach(n=>{ if(!ks.some(k=>k.indexOf(n)>=0)) ks.push(n); });
+  if(!ks.length) ks=[it.t.split(/[:—–(]/)[0].trim().slice(0,52)];
+  return ks.map(k=>'<span'+(/^[\d]/.test(k)?' class="nb"':'')+'>'+esc(k)+'</span>')
+           .join('<span class="sp">·</span>');
 }
 /* met en valeur les termes-clés et les nombres */
 function hl(it){
@@ -562,15 +600,21 @@ function endSession(){
     h+='<div class="ok-box">Aucun point manqué. Rien à retravailler sur cette session.</div>';
   }
 
-  h+='<button class="btn pri" onclick="exportSession()">📄 Exporter les points ratés</button>';
-  if(rates.length) h+='<button class="btn" onclick="replayMissed()">🔁 Refaire uniquement les questions ratées</button>';
-  h+='<button class="btn gh" onclick="quit()">Terminer</button>';
+  if(rates.length) h+='<button class="btn ok" onclick="replayMissed()">🔁 Revoir mes erreurs tout de suite'+
+    '<span class="d">'+rates.length+' point'+(rates.length>1?'s':'')+' raté'+(rates.length>1?'s':'')+
+    ' · la salle reste ouverte</span></button>';
+  h+='<button class="btn pri" onclick="newRound()">🎯 Nouvelle session'+
+    '<span class="d">Changer de matière ou de longueur, sans vous déconnecter</span></button>';
+  h+='<button class="btn" onclick="exportSession()">📄 Exporter les points ratés</button>';
+  h+='<button class="btn gh" onclick="quit()">Terminer et fermer la salle</button>';
 
   document.getElementById('end-body').innerHTML=h;
   show('s-end');
   push();               // envoie le bilan au récitant
   S.rates=rates; S.pc=pc;
 }
+let KEEP=false;
+function newRound(){ KEEP=true; openConf(); }
 function replayMissed(){
   const ids=new Set(S.rates.map(r=>r.c.id));
   const cards=S.cards.filter(c=>ids.has(c.id)); shuffle(cards);
@@ -789,6 +833,7 @@ function applyState(o){
   S.cards=[o.card]; S.i=0; S.n=o.n;
   S.marks=[o.marks]; S.bonus=[o.bonus]; S.phase=o.phase;
   S.total=o.n; S.idx=o.i;
+  if(o.i===0 && o.phase==='ask') lastCommitted=null;
   show('s-play'); renderPlay();
   document.getElementById('prog-i').style.width=(100*o.i/o.n)+'%';
   const b=document.getElementById('bar-body');
@@ -820,7 +865,9 @@ function applyEnd(o){
     o.rates.forEach(r=>h+='<div class="miss">'+esc(r.t)+'<span class="src">'+esc(r.s)+'</span></div>');
     h+='<button class="btn pri" onclick=\'dlRates('+JSON.stringify(JSON.stringify(o.rates))+')\'>📄 Exporter les points ratés</button>';
   }else h+='<div class="ok-box">Aucun point manqué. Impeccable.</div>';
-  h+='<button class="btn gh" onclick="quit()">Terminer</button>';
+  h+='<div class="ok-box">Reste sur cette page : ton binôme peut relancer une session '+
+     '(tes erreurs, ou une autre matière) et tu la recevras automatiquement.</div>';
+  h+='<button class="btn gh" onclick="quit()">Quitter la salle</button>';
   document.getElementById('end-body').innerHTML=h; show('s-end');
 }
 function dlRates(js){

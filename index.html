@@ -477,11 +477,13 @@ function itemsHTML(c, editable, blur){
 /* mots-clés à repérer à l'oreille : termes en gras + valeurs chiffrées */
 function kwHTML(it){
   let ks=(it.k||[]).filter(k=>k.length>1).slice(0,4);
-  const nums=(it.t.match(/\d[\d  .,\/–-]*\s*(?:%|g\/L|mmol\/L|mg|µg|mm|cm|mL|L|SA|UI|h|j|ans)?/g)||[])
-    .map(s=>s.trim()).filter(s=>s.length>0).slice(0,4);
+  /* valeurs chiffrées, mais pas les indices collés à une lettre (V1, C2, B12…) */
+  const nums=[];
+  it.t.replace(/(^|[^A-Za-zÀ-ÿ0-9])(\d[\d .,\/]*(?:%|g\/L|mmol\/L|mg|µg|mm|cm|mL|L|SA|UI|h|j|ans|mois|jours?|semaines?|minutes?|min|secondes?)?)/g,
+    (m,pre,v)=>{ v=v.trim().replace(/[.,]$/,''); if(v && nums.length<4) nums.push(v); return m; });
   nums.forEach(n=>{ if(!ks.some(k=>k.indexOf(n)>=0)) ks.push(n); });
   if(!ks.length) ks=[it.t.split(/[:—–(]/)[0].trim().slice(0,52)];
-  return ks.map(k=>'<span'+(/^[\d]/.test(k)?' class="nb"':'')+'>'+esc(k)+'</span>')
+  return ks.map(k=>'<span'+(/^\d/.test(k)?' class="nb"':'')+'>'+esc(k)+'</span>')
            .join('<span class="sp">·</span>');
 }
 /* met en valeur les termes-clés et les nombres */

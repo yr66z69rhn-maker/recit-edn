@@ -86,6 +86,10 @@ h2{font-size:17px;margin:22px 0 8px;color:#9aa4b2;text-transform:uppercase;lette
 .tip{background:rgba(111,179,255,.09);border-left:3px solid #5b9bd5;padding:10px 13px;
   border-radius:0 8px 8px 0;font-size:13.5px;color:#a8c4e0;margin:8px 0 2px;line-height:1.45}
 .tip b{color:#f0ac5b}
+.it.sec{background:transparent;border-style:dashed;border-color:#262a33;opacity:.82}
+.it.sec .kw{font-size:15px;color:#b3893f}
+.seclab{font-size:11.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;
+  color:#5f6672;margin:18px 0 2px;border-top:1px dashed #2a2d34;padding-top:12px}
 
 /* ---------- barre du bas ---------- */
 .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(24,26,32,.94);
@@ -248,7 +252,7 @@ function weight(c){
    ═══════════════════════════════════════════════════════════════════════════ */
 let ROLE=null;              // 'host' | 'guest' | 'solo'
 let CODE=null;
-let CONF={mat:new Set(), len:20, rang:'AB', prio:true};
+let CONF={mat:new Set(), len:20, rang:'AB', prio:true, ess:true};
 let S=null;                 // session en cours
 
 function go(where){
@@ -335,11 +339,15 @@ function openConf(){
   const p=document.createElement('div'); p.className='chip'+(CONF.prio?' on':'');
   p.textContent='⭐ Priorité aux points ratés';
   p.onclick=()=>{ CONF.prio=!CONF.prio; openConf(); }; oc.appendChild(p);
+  const e=document.createElement('div'); e.className='chip'+(CONF.ess?' on':'');
+  e.textContent='🎯 Mode essentiel';
+  e.onclick=()=>{ CONF.ess=!CONF.ess; openConf(); }; oc.appendChild(e);
 
   const pool=poolOf();
   document.getElementById('conf-count').textContent =
     pool.length+' question'+(pool.length>1?'s':'')+' disponibles · '+
-    pool.reduce((a,c)=>a+c.it.length,0)+' points à réciter.';
+    pool.reduce((a,c)=>a+(CONF.ess?(c.ne||c.it.length):c.it.length),0)+' points à réciter'+
+    (CONF.ess?" (mode essentiel : les compléments restent affichés, hors score)." : ".");
   document.getElementById('conf-go').disabled = pool.length===0;
   show('s-conf');
 }

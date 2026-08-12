@@ -111,6 +111,23 @@ h2{font-size:17px;margin:22px 0 8px;color:#9aa4b2;text-transform:uppercase;lette
 .dot.wait{background:#f0ac5b;animation:pulse 1.4s infinite}
 @keyframes pulse{50%{opacity:.35}}
 .center{text-align:center}
+
+/* ---------- mode vocal ---------- */
+.mic{width:100%;padding:22px 18px;border-radius:16px;border:1px solid #2f333c;background:#1e2128;
+  color:#e3e6ec;font-family:inherit;font-size:17px;font-weight:800;cursor:pointer;text-align:center;
+  display:flex;flex-direction:column;align-items:center;gap:8px}
+.mic .big-icn{font-size:38px;line-height:1}
+.mic .sml{font-size:13px;font-weight:600;color:#8b93a1}
+.mic.on{background:rgba(230,90,90,.12);border-color:#e2574c;color:#ffd9d5}
+.mic.on .big-icn{animation:mpulse 1.3s infinite}
+.mic.on .sml{color:#e7b2ad}
+@keyframes mpulse{50%{opacity:.35;transform:scale(.92)}}
+.tx{background:#181b21;border:1px solid #2a2d34;border-radius:12px;padding:12px 14px;margin-top:10px;
+  font-size:14.5px;line-height:1.5;color:#c8cdd6;min-height:52px;white-space:pre-wrap}
+.tx .ph{color:#5c636e;font-style:italic}
+.tx .iv{color:#7f8794}
+.txlab{font-size:11.5px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;color:#6f7681;margin-top:12px}
+.vhint{font-size:12.5px;color:#7f8794;margin-top:9px;line-height:1.45}
 .big{font-size:52px;font-weight:800;color:#e8eaef;line-height:1.1;margin:6px 0}
 .big small{font-size:22px;color:#8b93a1;font-weight:700}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:10px 0}
@@ -145,6 +162,8 @@ a{color:#7fc9ff}
     <span class="d">Tu rejoins avec le code que ton binôme te donne</span></button>
   <button class="btn ok" onclick="go('solo')">📱 À deux sur un seul écran
     <span class="d">Sans réseau, sans code : vous vous passez l'appareil. Marche toujours.</span></button>
+  <button class="btn" id="home-voice" onclick="go('voice')">🎙️ Seul, à voix haute
+    <span class="d">Tu récites, l'appareil t'écoute et coche ce que tu as dit</span></button>
   <h2>Ton historique</h2>
   <div id="home-stats"></div>
   <button class="btn gh mini" onclick="resetAll()" style="margin-top:14px">Effacer mon historique</button>
@@ -254,11 +273,171 @@ let ROLE=null;              // 'host' | 'guest' | 'solo'
 let CODE=null;
 let CONF={mat:new Set(), len:20, rang:'AB', prio:true, ess:true};
 let S=null;                 // session en cours
+let VOICE=false;            // mode « seul, à voix haute »
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODE VOCAL — reconnaissance intégrée au navigateur, correction en local.
+   Aucune clé d'API, aucun compte, rien n'est envoyé à un serveur tiers par
+   l'app elle-même : la correction compare ce que tu as dit aux mots-clés
+   déjà présents dans les cartes (les termes en gras).
+   ═══════════════════════════════════════════════════════════════════════════ */
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec=null, recOn=false, recTx='', recIv='', recErr='';
+
+function speechOK(){ return !!SR; }
+
+function vNorm(s){
+  return String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase()
+    .replace(/[’'`-]/g,' ')
+    .replace(/\bpour ?cents?\b/g,'%')
+    .replace(/\bsuperieur(?:e)?s? (?:ou egal(?:e)?s? )?a\b/g,'>')
+    .replace(/\binferieur(?:e)?s? (?:ou egal(?:e)?s? )?a\b/g,'<')
+    .replace(/\bgrammes? par litre\b/g,'g/l')
+    .replace(/\bmilligrammes? par litre\b/g,'mg/l')
+    .replace(/\bmillimoles? par litre\b/g,'mmol/l')
+    .replace(/\bmillimetres? de mercure\b/g,'mmhg')
+    .replace(/(\d)\s+sur\s+(\d)/g,'$1/$2')
+    .replace(/[^a-z0-9%<>=+.\/ ]/g,' ')
+    .replace(/\s+/g,' ').trim();
+}
+
+const STOP = new Set(('le la les un une des du de d au aux et ou a en dans sur pour par avec sans '+
+  'que qui quoi dont est sont etre il elle on ce cette ces son sa ses leur leurs plus moins tres '+
+  'si ne pas ni y se sy cest il-y-a chez lors vers entre').split(' '));
+
+/* mots-nombres français → chiffres, pour que « quarante-cinq pour cent » matche « 45% » */
+const NUMW={zero:0,un:1,une:1,deux:2,trois:3,quatre:4,cinq:5,six:6,sept:7,huit:8,neuf:9,dix:10,
+  onze:11,douze:12,treize:13,quatorze:14,quinze:15,seize:16,vingt:20,vingts:20,trente:30,
+  quarante:40,cinquante:50,soixante:60,cent:100,cents:100,mille:1000};
+function vNumbers(toks){
+  const out=[]; let tot=0, cur=0, inNum=false;
+  const flush=()=>{ if(inNum){ out.push(String(tot+cur)); tot=0; cur=0; inNum=false; } };
+  for(const t of toks){
+    if(Object.prototype.hasOwnProperty.call(NUMW,t)){
+      const v=NUMW[t];
+      if(v===100){ cur=(cur||1)*100; tot+=cur; cur=0; }        // cent quatre-vingt = 180
+      else if(v===1000){ tot=((tot+cur)||1)*1000; cur=0; }
+      else if(v===20 && cur===4) cur=80;                        // quatre-vingt
+      else cur+=v;                                              // quarante cinq = 45
+      inNum=true;
+    } else flush();
+  }
+  flush();
+  return out;
+}
+
+function saidTokens(tx){
+  const toks = vNorm(tx).split(' ').filter(Boolean);
+  return toks.concat(vNumbers(toks));
+}
+
+function lev(a,b){
+  if(a===b) return 0;
+  const m=a.length, n=b.length;
+  if(Math.abs(m-n)>3) return 9;
+  let prev=Array.from({length:n+1},(_,j)=>j);
+  for(let i=1;i<=m;i++){
+    const cur=[i];
+    for(let j=1;j<=n;j++)
+      cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+    prev=cur;
+  }
+  return prev[n];
+}
+/* tolérant aux approximations de la dictée sur le vocabulaire médical */
+function tokMatch(a,b){
+  if(a===b) return true;
+  const la=a.length, lb=b.length;
+  if(la<4||lb<4) return false;
+  if(la>=5&&lb>=5&&Math.abs(la-lb)<=4&&(a.slice(0,5)===b.slice(0,5))) return true;
+  return lev(a,b) <= (Math.max(la,lb)>=8 ? 2 : 1);
+}
+function keyToks(str, cap){
+  const t = vNorm(str).split(' ').filter(x=>x.length>2 && !STOP.has(x));
+  return cap? t.slice(0,cap) : t;
+}
+/* un item est considéré dit si l'un de ses mots-clés est suffisamment retrouvé */
+function itemSaid(it, said){
+  const keys = (it.k && it.k.length) ? it.k : null;
+  if(keys){
+    for(const k of keys){
+      const toks = keyToks(k);
+      if(!toks.length) continue;
+      let hit=0;
+      for(const t of toks) if(said.some(s=>tokMatch(s,t))) hit++;
+      const need = toks.length<=2 ? toks.length : Math.ceil(toks.length*0.6);
+      if(hit>=need) return true;
+    }
+    return false;
+  }
+  const toks = keyToks(it.t, 8);
+  if(!toks.length) return false;
+  let hit=0;
+  for(const t of toks) if(said.some(s=>tokMatch(s,t))) hit++;
+  return hit >= Math.ceil(toks.length*0.5);
+}
+
+function startRec(){
+  if(!SR){ recErr='non-supporté'; renderPlay(); return; }
+  recTx=''; recIv=''; recErr=''; recOn=true;
+  mkRec();
+  renderPlay();
+}
+function mkRec(){
+  rec = new SR();
+  rec.lang='fr-FR';
+  /* continuous=true casse la reconnaissance sur iOS (le micro ne rend jamais
+     la main) : on reste en mode court et on relance à chaque fin. */
+  rec.continuous=false;
+  rec.interimResults=true;
+  rec.maxAlternatives=1;
+  rec.onresult=e=>{
+    recIv='';
+    for(let i=e.resultIndex;i<e.results.length;i++){
+      const r=e.results[i];
+      if(r.isFinal) recTx += ' ' + r[0].transcript;
+      else recIv += ' ' + r[0].transcript;
+    }
+    paintTx();
+  };
+  rec.onerror=e=>{
+    if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+      recOn=false; recErr='micro-refusé'; renderPlay();
+    } else if(e.error==='network'){ recErr='réseau'; paintTx(); }
+  };
+  rec.onend=()=>{ if(recOn) setTimeout(()=>{ if(recOn) mkRec(); }, 120); };
+  try{ rec.start(); }catch(e){}
+}
+function stopRec(){
+  recOn=false;
+  if(rec){ try{ rec.onend=null; rec.stop(); }catch(e){} }
+  rec=null;
+}
+function paintTx(){
+  const el=document.getElementById('vtx');
+  if(!el) return;
+  const t=(recTx+' '+recIv).trim();
+  el.innerHTML = t
+    ? esc(recTx.trim()) + (recIv.trim()? ' <span class="iv">'+esc(recIv.trim())+'</span>' : '')
+    : '<span class="ph">Parle : ce que l\'appareil entend s\'affiche ici.</span>';
+}
+/* fin de récitation : coche automatiquement, puis te laisse corriger */
+function voiceGrade(){
+  stopRec();
+  const c=cur();
+  const said=saidTokens(recTx);
+  S.marks[S.i] = c.it.map(it => itemSaid(it, said) ? 1 : null);
+  S.tx = recTx.trim();
+  S.phase='mark';
+  renderPlay();
+}
 
 function go(where){
   if(where==='home'){ show('s-home'); homeStats(); return; }
-  if(where==='host'||where==='solo'){ ROLE=where; openConf(); return; }
-  if(where==='join'){ ROLE='guest'; show('s-join'); setTimeout(()=>document.getElementById('join-code').focus(),150); return; }
+  if(where==='voice'){ VOICE=true; ROLE='solo'; openConf(); return; }
+  if(where==='host'||where==='solo'){ VOICE=false; ROLE=where; openConf(); return; }
+  if(where==='join'){ VOICE=false; ROLE='guest'; show('s-join'); setTimeout(()=>document.getElementById('join-code').focus(),150); return; }
 }
 function show(id){
   ['s-home','s-conf','s-room','s-join','s-play','s-end'].forEach(x=>
@@ -417,7 +596,31 @@ function renderPlay(){
   const isMarker = (ROLE==='host'||ROLE==='solo');
 
   if(S.phase==='ask'){
-    if(isMarker){
+    if(VOICE){
+      const att = notes(c).length;
+      if(!speechOK()){
+        body.innerHTML = '<div class="err"><b>La dictée vocale n\'est pas disponible sur ce navigateur.</b><br>'+
+          'Utilise Safari (iPhone/iPad/Mac) ou Chrome. Tu peux continuer en cochant à la main : '+
+          'appuie sur « Corriger » ci-dessous.</div>' + itemsHTML(c, false, true);
+      }else{
+        body.innerHTML =
+          '<div class="recite" style="padding:14px"><b style="color:#7fc9ff;font-size:19px">'+
+            att+' point'+(att>1?'s':'')+' attendu'+(att>1?'s':'')+'</b><br>'+
+            '<span style="font-size:14px">Récite à voix haute, le plus complètement possible.</span></div>'+
+          '<button class="mic'+(recOn?' on':'')+'" onclick="'+(recOn?'voiceGrade()':'startRec()')+'">'+
+            '<span class="big-icn">'+(recOn?'⏹️':'🎙️')+'</span>'+
+            (recOn? 'J\'ai fini — corriger' : 'Appuie et récite')+
+            '<span class="sml">'+(recOn? 'L\'appareil t\'écoute…' : 'Le micro s\'active à l\'appui')+'</span>'+
+          '</button>'+
+          (recErr==='micro-refusé'? '<div class="err">Accès au micro refusé. Autorise-le dans les réglages du navigateur, puis réessaie.</div>':'')+
+          (recErr==='réseau'? '<div class="warn">La dictée a besoin d\'Internet pour transcrire.</div>':'')+
+          '<div class="txlab">Ce que l\'appareil entend</div>'+
+          '<div class="tx" id="vtx"><span class="ph">Parle : ce que l\'appareil entend s\'affiche ici.</span></div>'+
+          '<div class="vhint">La correction compare ce que tu dis aux mots-clés de la carte. '+
+            'Elle est tolérante, mais tu gardes toujours la main : tu pourras rectifier chaque ligne juste après.</div>';
+        paintTx();
+      }
+    }else if(isMarker){
       body.innerHTML = '<div class="recite"><span class="icn">🎤</span>'+
         'Laisse-le réciter en entier, sans l\'interrompre.<br>Tu cocheras juste après.</div>'+
         itemsHTML(c, false, true);
@@ -429,8 +632,14 @@ function renderPlay(){
         'Ton binôme voit la même question que toi.</span></div>';
     }
   }else if(S.phase==='mark'){
+    const txBox = (VOICE && S.tx!=null)
+      ? '<div class="txlab">Ce que tu as dit</div><div class="tx">'+
+        (S.tx? esc(S.tx) : '<span class="ph">Rien n\'a été entendu.</span>')+'</div>'+
+        '<div class="vhint">Les lignes reconnues sont déjà cochées ✓. Rectifie ce qui ne va pas, '+
+        'puis valide : ce qui reste non tranché sera compté comme raté.</div>'
+      : '';
     body.innerHTML = isMarker
-      ? itemsHTML(c, true, false)
+      ? txBox + itemsHTML(c, true, false)
       : '<div class="recite"><span class="icn">⏳</span>Ton binôme est en train de corriger…</div>';
   }else{ // show
     body.innerHTML = itemsHTML(c, false, false) + scoreLine();
@@ -545,19 +754,34 @@ function renderBar(){
     'Question '+n+' / '+N+(ROLE!=='solo'?' · salle '+CODE+' '+netDot():'')+'</div>';
 
   if(S.phase==='ask'){
-    b.innerHTML = info + (isMarker
-      ? '<button class="btn pri" style="margin:0" onclick="toMark()">Il a fini → corriger</button>'
-      : '<button class="btn pri" style="margin:0" onclick="guestDone()">J\'ai fini de réciter</button>');
+    b.innerHTML = info + duo(VOICE
+      ? '<button class="btn pri" style="margin:0;flex:1" onclick="'+(recOn?'voiceGrade()':'toMark()')+'">'+
+        (recOn? 'J\'ai fini — corriger' : 'Corriger à la main')+'</button>'
+      : isMarker
+      ? '<button class="btn pri" style="margin:0;flex:1" onclick="toMark()">Il a fini → corriger</button>'
+      : '<button class="btn pri" style="margin:0;flex:1" onclick="guestDone()">J\'ai fini de réciter</button>');
   }else if(S.phase==='mark'){
     const left=notes(cur()).filter(i=>S.marks[S.i][i]===null).length;
-    b.innerHTML = info + (isMarker
-      ? '<button class="btn ok" style="margin:0" onclick="validate()">'+
+    b.innerHTML = info + duo(isMarker
+      ? '<button class="btn ok" style="margin:0;flex:1" onclick="validate()">'+
         (left? 'Valider ('+left+' non tranché'+(left>1?'s':'')+' → compté raté)' : 'Valider et montrer')+'</button>'
-      : '<div class="note" style="margin:0">Correction en cours…</div>');
+      : '<div class="note" style="margin:0;flex:1">Correction en cours…</div>');
   }else{
     b.innerHTML = info + '<button class="btn pri" style="margin:0" onclick="next()">'+
       (S.i+1<N? 'Question suivante →' : 'Voir le bilan →')+'</button>';
   }
+}
+/* bouton « passer » : disponible des deux côtés, à tout moment de l'épreuve. */
+function skipBtn(){
+  const h = (ROLE==='host'||ROLE==='solo') ? 'skip()' : 'guestSkip()';
+  /* width:auto est indispensable : .btn impose width:100%, qui servirait sinon
+     de base flex et écraserait le bouton principal. */
+  return '<button class="btn gh" style="margin:0;flex:0 0 auto;width:auto;white-space:nowrap;'+
+         'padding:15px 16px;text-align:center;color:#9aa4b2" '+
+         'title="Passer sans compter cette question" onclick="'+h+'">Passer ⏭</button>';
+}
+function duo(main){
+  return '<div style="display:flex;gap:8px;align-items:stretch">'+main+skipBtn()+'</div>';
 }
 function netDot(){ return net.up? '<span class="dot on"></span>' : '<span class="dot wait"></span>'; }
 
@@ -568,8 +792,26 @@ function validate(){
   S.phase='show'; commit(); renderPlay(); push();
 }
 function next(){
+  resetVoice();
   if(S.i+1>=S.cards.length) return endSession();
   S.i++; S.phase='ask'; renderPlay(); push();
+}
+/* passe la question sans l'enregistrer : ni réussie, ni ratée. */
+function skip(){
+  if(!S || S.done) return;
+  resetVoice();
+  S.marks[S.i]=S.marks[S.i].map(()=>null);
+  S.bonus[S.i]=S.bonus[S.i].map(()=>null);
+  if(S.i+1>=S.cards.length) return endSession();
+  S.i++; S.phase='ask'; renderPlay(); push();
+}
+/* le récitant demande à passer ; l'hôte exécute et rediffuse l'état. */
+function guestSkip(){ net.send({t:'skip'}); }
+/* coupe le micro et vide la transcription entre deux questions */
+function resetVoice(){
+  if(recOn || rec) stopRec();
+  recTx=''; recIv=''; recErr='';
+  if(S) S.tx=null;
 }
 
 /* enregistre les résultats de la question courante dans la mémoire locale */
@@ -834,6 +1076,7 @@ net.onmsg=function(o){
       if(S && !S.done) push();
     }
     if(o.t==='done' && S && S.phase==='ask'){ S.phase='mark'; renderPlay(); push(); }
+    if(o.t==='skip' && S && !S.done){ skip(); }
   }
   /* ---------- côté récitant ---------- */
   else{
@@ -865,9 +1108,9 @@ function applyState(o){
   const b=document.getElementById('bar-body');
   const info='<div style="font-size:12.5px;color:#7f8794;font-weight:700;margin-bottom:7px">'+
     'Question '+(o.i+1)+' / '+o.n+' · salle '+CODE+' '+netDot()+'</div>';
-  if(o.phase==='ask') b.innerHTML=info+'<button class="btn pri" style="margin:0" onclick="guestDone()">J\'ai fini de réciter</button>';
-  else if(o.phase==='mark') b.innerHTML=info+'<div class="note" style="margin:0">Ton binôme corrige…</div>';
-  else b.innerHTML=info+'<div class="note" style="margin:0">Lis la correction. Il enchaîne quand tu es prêt.</div>';
+  if(o.phase==='ask') b.innerHTML=info+duo('<button class="btn pri" style="margin:0;flex:1" onclick="guestDone()">J\'ai fini de réciter</button>');
+  else if(o.phase==='mark') b.innerHTML=info+duo('<div class="note" style="margin:0;flex:1">Ton binôme corrige…</div>');
+  else b.innerHTML=info+duo('<div class="note" style="margin:0;flex:1">Lis la correction. Il enchaîne quand tu es prêt.</div>');
   if(o.phase==='show') commitGuest(o);
 }
 let lastCommitted=null;
